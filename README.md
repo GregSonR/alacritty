@@ -31,6 +31,11 @@ Join [`#alacritty`] on libera.chat if you have questions or looking for a quick 
 
 You can find an overview over the features available in Alacritty [here](./docs/features.md).
 
+Alacritty supports internal tabs inside a single window. Press
+<kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>T</kbd> to open a new tab, click a tab
+in the top tab bar to switch to it, click its `x` button to close it, or press
+<kbd>Alt</kbd> plus a number key to jump to that tab.
+
 ## Further information
 
 - [Announcing Alacritty, a GPU-Accelerated Terminal Emulator](https://jwilm.io/blog/announcing-alacritty/) January 6, 2017
@@ -101,9 +106,9 @@ usecases.
 
 Alacritty has many great features, but not every feature from every other
 terminal. This could be for a number of reasons, but sometimes it's just not a
-good fit for Alacritty. This means you won't find things like tabs or splits
-(which are best left to a window manager or [terminal multiplexer][tmux]) nor
-niceties like a GUI config editor.
+good fit for Alacritty. This means you won't find things like splits (which are
+best left to a window manager or [terminal multiplexer][tmux]) nor niceties like
+a GUI config editor.
 
 [tmux]: https://github.com/tmux/tmux
 

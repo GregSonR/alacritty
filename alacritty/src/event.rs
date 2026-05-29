@@ -389,6 +389,23 @@ impl ApplicationHandler<Event> for Processor {
                     error!("Could not open window: {err:?}");
                 }
             },
+            (EventType::CreateTab, Some(window_id)) => {
+                if let Some(window_context) = self.windows.get_mut(window_id) {
+                    if let Err(err) = window_context.create_tab(self.proxy.clone()) {
+                        error!("Could not open tab: {err:?}");
+                    }
+                }
+            },
+            (EventType::SelectTab(index), Some(window_id)) => {
+                if let Some(window_context) = self.windows.get_mut(window_id) {
+                    window_context.select_tab(index);
+                }
+            },
+            (EventType::CloseTab(index), Some(window_id)) => {
+                if let Some(window_context) = self.windows.get_mut(window_id) {
+                    window_context.close_tab(index);
+                }
+            },
             // Shutdown all windows.
             #[cfg(unix)]
             (EventType::Shutdown, _) => event_loop.exit(),
@@ -410,6 +427,14 @@ impl ApplicationHandler<Event> for Processor {
                 if let Some(window_context) = self.windows.get_mut(window_id) {
                     window_context.dirty = true;
                     if window_context.display.window.has_frame {
+                        window_context.display.window.request_redraw();
+                    }
+                }
+            },
+            (EventType::TabTerminal(tab_id, event), Some(window_id)) => {
+                if let Some(window_context) = self.windows.get_mut(window_id) {
+                    window_context.handle_tab_terminal_event(tab_id, event);
+                    if window_context.dirty && window_context.display.window.has_frame {
                         window_context.display.window.request_redraw();
                     }
                 }
@@ -542,10 +567,14 @@ impl From<Event> for WinitEvent<Event> {
 #[derive(Debug, Clone)]
 pub enum EventType {
     Terminal(TerminalEvent),
+    TabTerminal(u64, TerminalEvent),
     ConfigReload(PathBuf),
     Message(Message),
     Scroll(Scroll),
     CreateWindow(WindowOptions),
+    CreateTab,
+    SelectTab(usize),
+    CloseTab(usize),
     #[cfg(unix)]
     IpcConfig(IpcConfig),
     #[cfg(unix)]
@@ -900,6 +929,18 @@ impl<'a, N: Notify + 'a, T: EventListener> input::ActionContext<T> for ActionCon
         let _ = self
             .event_proxy
             .send_event(Event::new(EventType::CreateWindow(WindowOptions::default()), None));
+    }
+
+    fn create_new_tab(&mut self) {
+        let _ = self
+            .event_proxy
+            .send_event(Event::new(EventType::CreateTab, self.display.window.id()));
+    }
+
+    fn select_tab(&mut self, index: usize) {
+        let _ = self
+            .event_proxy
+            .send_event(Event::new(EventType::SelectTab(index), self.display.window.id()));
     }
 
     fn spawn_daemon<I, S>(&self, program: &str, args: I)
@@ -1843,6 +1884,10 @@ impl input::Processor<EventProxy, ActionContext<'_, Notifier, EventProxy>> {
             WinitEvent::UserEvent(Event { payload, .. }) => match payload {
                 EventType::SearchNext => self.ctx.goto_match(None),
                 EventType::Scroll(scroll) => self.ctx.scroll(scroll),
+                EventType::CreateTab
+                | EventType::SelectTab(_)
+                | EventType::CloseTab(_)
+                | EventType::TabTerminal(..) => (),
                 EventType::BlinkCursor => {
                     // Only change state when timeout isn't reached, since we could get
                     // BlinkCursor and BlinkCursorTimeout events at the same time.
@@ -2073,11 +2118,12 @@ impl input::Processor<EventProxy, ActionContext<'_, Notifier, EventProxy>> {
 pub struct EventProxy {
     proxy: EventLoopProxy<Event>,
     window_id: WindowId,
+    tab_id: u64,
 }
 
 impl EventProxy {
-    pub fn new(proxy: EventLoopProxy<Event>, window_id: WindowId) -> Self {
-        Self { proxy, window_id }
+    pub fn new(proxy: EventLoopProxy<Event>, window_id: WindowId, tab_id: u64) -> Self {
+        Self { proxy, window_id, tab_id }
     }
 
     /// Send an event to the event loop.
@@ -2088,6 +2134,8 @@ impl EventProxy {
 
 impl EventListener for EventProxy {
     fn send_event(&self, event: TerminalEvent) {
-        let _ = self.proxy.send_event(Event::new(event.into(), self.window_id));
+        let _ = self
+            .proxy
+            .send_event(Event::new(EventType::TabTerminal(self.tab_id, event), self.window_id));
     }
 }

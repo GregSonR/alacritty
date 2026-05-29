@@ -549,6 +549,16 @@ fn common_keybindings() -> Vec<KeyBinding> {
         "v",    ModifiersState::CONTROL | ModifiersState::SHIFT, +BindingMode::VI, +BindingMode::SEARCH; Action::Paste;
         "f",    ModifiersState::CONTROL | ModifiersState::SHIFT, ~BindingMode::SEARCH;                   Action::SearchForward;
         "b",    ModifiersState::CONTROL | ModifiersState::SHIFT, ~BindingMode::SEARCH;                   Action::SearchBackward;
+        "t",    ModifiersState::CONTROL | ModifiersState::SHIFT;                                         Action::CreateNewTab;
+        "1",    ModifiersState::ALT;                                                                     Action::SelectTab1;
+        "2",    ModifiersState::ALT;                                                                     Action::SelectTab2;
+        "3",    ModifiersState::ALT;                                                                     Action::SelectTab3;
+        "4",    ModifiersState::ALT;                                                                     Action::SelectTab4;
+        "5",    ModifiersState::ALT;                                                                     Action::SelectTab5;
+        "6",    ModifiersState::ALT;                                                                     Action::SelectTab6;
+        "7",    ModifiersState::ALT;                                                                     Action::SelectTab7;
+        "8",    ModifiersState::ALT;                                                                     Action::SelectTab8;
+        "9",    ModifiersState::ALT;                                                                     Action::SelectTab9;
         Insert, ModifiersState::SHIFT,                           ~BindingMode::VI;                       Action::PasteSelection;
         "c",    ModifiersState::CONTROL | ModifiersState::SHIFT;                                         Action::Copy;
         "c",    ModifiersState::CONTROL | ModifiersState::SHIFT, +BindingMode::VI, ~BindingMode::SEARCH; Action::ClearSelection;

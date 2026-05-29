@@ -67,6 +67,29 @@ mod bell;
 mod damage;
 mod meter;
 
+/// Number of terminal grid rows reserved for the internal tab bar.
+pub const TAB_BAR_LINES: usize = 1;
+
+/// Result of pointer interaction with the tab bar.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum TabBarHit {
+    Select(usize),
+    Close(usize),
+}
+
+#[derive(Debug, Clone)]
+struct TabBar {
+    titles: Vec<String>,
+    active: usize,
+    bounds: Vec<TabBounds>,
+}
+
+#[derive(Debug, Copy, Clone)]
+struct TabBounds {
+    start_col: usize,
+    width: usize,
+}
+
 /// Label for the forward terminal search bar.
 const FORWARD_SEARCH_LABEL: &str = "Search: ";
 
@@ -265,6 +288,12 @@ impl SizeInfo<f32> {
         self.screen_lines = cmp::max(self.screen_lines.saturating_sub(count), MIN_SCREEN_LINES);
     }
 
+    #[inline]
+    pub fn reserve_top_lines(&mut self, count: usize) {
+        self.padding_y += self.cell_height * count as f32;
+        self.reserve_lines(count);
+    }
+
     /// Check if coordinates are inside the terminal grid.
     ///
     /// The padding, message bar or search are not counted as part of the grid.
@@ -387,6 +416,8 @@ pub struct Display {
 
     // Mouse point position when highlighting hints.
     hint_mouse_point: Option<Point>,
+
+    tab_bar: Option<TabBar>,
 
     renderer: ManuallyDrop<Renderer>,
     renderer_preference: Option<RendererPreference>,
@@ -535,6 +566,7 @@ impl Display {
             vi_highlighted_hint: Default::default(),
             highlighted_hint: Default::default(),
             hint_mouse_point: Default::default(),
+            tab_bar: Default::default(),
             pending_update: Default::default(),
             cursor_hidden: Default::default(),
             meter: Default::default(),
@@ -654,6 +686,7 @@ impl Display {
         pty_resize_handle: &mut dyn OnResize,
         message_buffer: &MessageBuffer,
         search_state: &mut SearchState,
+        tab_bar_visible: bool,
         config: &UiConfig,
     ) where
         T: EventListener,
@@ -698,6 +731,10 @@ impl Display {
             padding.1,
             config.window.dynamic_padding,
         );
+
+        if tab_bar_visible {
+            new_size.reserve_top_lines(TAB_BAR_LINES);
+        }
 
         // Update number of column/lines in the viewport.
         let search_active = search_state.history_index.is_some();
@@ -1008,6 +1045,8 @@ impl Display {
             self.renderer.draw_rects(&size_info, &metrics, rects);
         }
 
+        self.draw_tab_bar(config);
+
         self.draw_render_timer(config);
 
         // Draw hyperlink uri preview.
@@ -1213,6 +1252,108 @@ impl Display {
         };
 
         self.window.update_ime_position(ime_popup_point, &self.size_info);
+    }
+
+    fn draw_tab_bar(&mut self, config: &UiConfig) {
+        let tabs = match &self.tab_bar {
+            Some(tab_bar) => tab_bar,
+            None => return,
+        };
+
+        let metrics = self.glyph_cache.font_metrics();
+        let bg = config.colors.footer_bar_background();
+        let active_bg = config.colors.primary.background;
+        let fg = config.colors.footer_bar_foreground();
+        let active_fg = config.colors.primary.foreground;
+        let height = self.size_info.cell_height();
+        let width = self.size_info.width();
+
+        let mut rects = vec![RenderRect::new(0., 0., width, height, bg, 1.)];
+        for (index, bounds) in tabs.bounds.iter().enumerate() {
+            if index == tabs.active {
+                rects.push(RenderRect::new(
+                    bounds.start_col as f32 * self.size_info.cell_width(),
+                    0.,
+                    bounds.width as f32 * self.size_info.cell_width(),
+                    height,
+                    active_bg,
+                    1.,
+                ));
+            }
+        }
+        self.renderer.draw_rects(&self.size_info, &metrics, rects);
+
+        let mut tab_size = self.size_info;
+        tab_size.padding_x = 0.;
+        tab_size.padding_y = 0.;
+        tab_size.screen_lines = TAB_BAR_LINES;
+
+        let glyph_cache = &mut self.glyph_cache;
+        for (index, bounds) in tabs.bounds.iter().enumerate() {
+            let selected = index == tabs.active;
+            let label = format!(" {}  {}  x ", index + 1, tabs.titles[index]);
+            self.renderer.draw_string(
+                Point::new(0, Column(bounds.start_col)),
+                if selected { active_fg } else { fg },
+                if selected { active_bg } else { bg },
+                label.chars().take(bounds.width),
+                &tab_size,
+                glyph_cache,
+            );
+        }
+    }
+
+    pub fn set_tab_bar(&mut self, titles: Vec<String>, active: usize) {
+        if titles.len() <= 1 {
+            self.tab_bar = None;
+            return;
+        }
+
+        let mut bounds = Vec::with_capacity(titles.len());
+        let mut start_col = 0;
+        let max_columns = self.size_info.columns().max(1);
+
+        for (index, title) in titles.iter().enumerate() {
+            if start_col >= max_columns {
+                break;
+            }
+
+            let remaining = max_columns - start_col;
+            let ideal_width = (title.chars().count() + 8).clamp(10, 24);
+            let width = if index + 1 == titles.len() {
+                remaining.min(ideal_width)
+            } else {
+                remaining.min(ideal_width)
+            };
+
+            bounds.push(TabBounds { start_col, width });
+            start_col += width;
+        }
+
+        self.tab_bar = Some(TabBar { titles, active, bounds });
+    }
+
+    pub fn tab_bar_hit(&self, x: f64, y: f64) -> Option<TabBarHit> {
+        let tabs = self.tab_bar.as_ref()?;
+        if y < 0. || y >= self.size_info.cell_height() as f64 {
+            return None;
+        }
+
+        let column = (x / self.size_info.cell_width() as f64) as usize;
+        for (index, bounds) in tabs.bounds.iter().enumerate() {
+            let end = bounds.start_col + bounds.width;
+            if column < bounds.start_col || column >= end {
+                continue;
+            }
+
+            return Some(if column + 3 >= end {
+                TabBarHit::Close(index)
+            } else {
+                TabBarHit::Select(index)
+            });
+        }
+
+        None
     }
 
     /// Format search regex to account for the cursor and fullwidth characters.
