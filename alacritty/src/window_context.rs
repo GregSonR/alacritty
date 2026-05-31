@@ -21,7 +21,7 @@ use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::raw_window_handle::HasDisplayHandle;
 use winit::window::WindowId;
 
-use alacritty_terminal::event::Event as TerminalEvent;
+use alacritty_terminal::event::{Event as TerminalEvent, OnResize};
 use alacritty_terminal::event_loop::{EventLoop as PtyEventLoop, Msg, Notifier};
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::Direction;
@@ -413,10 +413,7 @@ impl WindowContext {
         self.next_tab_id += 1;
         self.tabs.push(tab);
         self.active_tab = self.tabs.len() - 1;
-        self.display.pending_update.dirty = true;
-        self.update_tab_bar();
-        self.dirty = true;
-        self.request_redraw();
+        self.sync_active_tab();
         Ok(())
     }
 
@@ -426,10 +423,7 @@ impl WindowContext {
         }
 
         self.active_tab = index;
-        self.update_tab_bar();
-        self.display.pending_update.dirty = true;
-        self.dirty = true;
-        self.request_redraw();
+        self.sync_active_tab();
     }
 
     pub fn close_tab(&mut self, index: usize) {
@@ -450,10 +444,7 @@ impl WindowContext {
             self.active_tab -= 1;
         }
 
-        self.update_tab_bar();
-        self.display.pending_update.dirty = true;
-        self.dirty = true;
-        self.request_redraw();
+        self.sync_active_tab();
     }
 
     pub fn handle_tab_terminal_event(&mut self, tab_id: u64, event: TerminalEvent) {
@@ -483,6 +474,12 @@ impl WindowContext {
             },
             event => {
                 if index == self.active_tab {
+                    // Mark the window dirty so the active terminal is redrawn. This is
+                    // essential for `Wakeup`, which signals new PTY output but is a no-op
+                    // in the input processor; without it the screen only refreshes on
+                    // incidental events (cursor blink, keypresses), making the terminal
+                    // appear laggy and swallow typed input.
+                    self.dirty = true;
                     self.event_queue.push(Event::new(event.into(), self.id()).into());
                 }
             },
@@ -492,6 +489,56 @@ impl WindowContext {
     fn update_tab_bar(&mut self) {
         let titles = self.tabs.iter().map(|tab| tab.title.clone()).collect();
         self.display.set_tab_bar(titles, self.active_tab);
+    }
+
+    /// Synchronise the display and the active terminal after a tab change.
+    ///
+    /// Creating, selecting or closing a tab can toggle the tab bar's visibility
+    /// (which steals/returns a grid line), and the terminal that is about to be
+    /// displayed may still carry a grid size from when it was last active. Both
+    /// must be reconciled here, since the redraw path does not run the regular
+    /// display-update logic that resizes the grid on window events.
+    fn sync_active_tab(&mut self) {
+        let tab_bar_visible = self.tabs.len() > 1;
+        let old_is_searching = self.search_state.history_index.is_some();
+
+        self.update_tab_bar();
+
+        // Recompute `size_info`, accounting for the tab bar appearing/disappearing.
+        // This resizes the active terminal when the available grid size changes.
+        self.display.pending_update.dirty = true;
+        {
+            let active_tab = &mut self.tabs[self.active_tab];
+            let mut terminal = active_tab.terminal.lock();
+            Self::submit_display_update(
+                &mut terminal,
+                &mut self.display,
+                &mut active_tab.notifier,
+                &self.message_buffer,
+                &mut self.search_state,
+                old_is_searching,
+                tab_bar_visible,
+                &self.config,
+            );
+        }
+
+        // `submit_display_update` only resizes the terminal when `size_info`
+        // itself changed. When switching between tabs while the bar stays
+        // visible the size is unchanged, yet the newly active terminal can hold
+        // an outdated grid size, so force it to match the current display.
+        let size_info = self.display.size_info;
+        let active_tab = &mut self.tabs[self.active_tab];
+        let mut terminal = active_tab.terminal.lock();
+        if terminal.screen_lines() != size_info.screen_lines()
+            || terminal.columns() != size_info.columns()
+        {
+            terminal.resize(size_info);
+            active_tab.notifier.on_resize(size_info.into());
+        }
+        drop(terminal);
+
+        self.dirty = true;
+        self.request_redraw();
     }
 
     fn request_redraw(&mut self) {
