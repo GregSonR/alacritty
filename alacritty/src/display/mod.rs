@@ -858,7 +858,12 @@ impl Display {
 
         let requires_full_damage = self.visual_bell.intensity() != 0.
             || self.hint_state.active()
-            || search_state.regex().is_some();
+            || search_state.regex().is_some()
+            // The tab bar lives in the top padding, outside the grid lines tracked by the
+            // terminal's damage. On Wayland, `swap_buffers_with_damage` only presents damaged
+            // regions, so without forcing full damage the bar (and the one-line content shift it
+            // causes) would not be presented, leaving stale pixels from the previous layout.
+            || self.tab_bar.is_some();
         if requires_full_damage {
             self.damage_tracker.frame().mark_fully_damaged();
             self.damage_tracker.next_frame().mark_fully_damaged();
@@ -1268,12 +1273,17 @@ impl Display {
         let height = self.size_info.cell_height();
         let width = self.size_info.width();
 
-        let mut rects = vec![RenderRect::new(0., 0., width, height, bg, 1.)];
+        // The bar occupies the reserved line directly above the terminal content. Content
+        // starts at `padding_y` (base padding + one cell from `reserve_top_lines`), so place
+        // the bar flush against it, leaving the regular top padding as a margin above.
+        let top = (self.size_info.padding_y() - height).max(0.);
+
+        let mut rects = vec![RenderRect::new(0., top, width, height, bg, 1.)];
         for (index, bounds) in tabs.bounds.iter().enumerate() {
             if index == tabs.active {
                 rects.push(RenderRect::new(
                     bounds.start_col as f32 * self.size_info.cell_width(),
-                    0.,
+                    top,
                     bounds.width as f32 * self.size_info.cell_width(),
                     height,
                     active_bg,
@@ -1285,8 +1295,13 @@ impl Display {
 
         let mut tab_size = self.size_info;
         tab_size.padding_x = 0.;
-        tab_size.padding_y = 0.;
+        tab_size.padding_y = top;
         tab_size.screen_lines = TAB_BAR_LINES;
+
+        // The text renderer's projection is only refreshed on resize and maps grid line 0 to the
+        // content's top padding. Retarget it to `tab_size` so line 0 lands in the reserved strip
+        // (aligned with the rects above), then restore it for any subsequent text drawing.
+        self.renderer.resize(&tab_size);
 
         let glyph_cache = &mut self.glyph_cache;
         for (index, bounds) in tabs.bounds.iter().enumerate() {
@@ -1301,6 +1316,8 @@ impl Display {
                 glyph_cache,
             );
         }
+
+        self.renderer.resize(&self.size_info);
     }
 
     pub fn set_tab_bar(&mut self, titles: Vec<String>, active: usize) {

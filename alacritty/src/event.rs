@@ -406,6 +406,11 @@ impl ApplicationHandler<Event> for Processor {
                     window_context.close_tab(index);
                 }
             },
+            (EventType::CloseActiveTab, Some(window_id)) => {
+                if let Some(window_context) = self.windows.get_mut(window_id) {
+                    window_context.close_active_tab();
+                }
+            },
             // Shutdown all windows.
             #[cfg(unix)]
             (EventType::Shutdown, _) => event_loop.exit(),
@@ -575,6 +580,7 @@ pub enum EventType {
     CreateTab,
     SelectTab(usize),
     CloseTab(usize),
+    CloseActiveTab,
     #[cfg(unix)]
     IpcConfig(IpcConfig),
     #[cfg(unix)]
@@ -935,6 +941,12 @@ impl<'a, N: Notify + 'a, T: EventListener> input::ActionContext<T> for ActionCon
         let _ = self
             .event_proxy
             .send_event(Event::new(EventType::CreateTab, self.display.window.id()));
+    }
+
+    fn close_current_tab(&mut self) {
+        let _ = self
+            .event_proxy
+            .send_event(Event::new(EventType::CloseActiveTab, self.display.window.id()));
     }
 
     fn select_tab(&mut self, index: usize) {
@@ -1887,6 +1899,7 @@ impl input::Processor<EventProxy, ActionContext<'_, Notifier, EventProxy>> {
                 EventType::CreateTab
                 | EventType::SelectTab(_)
                 | EventType::CloseTab(_)
+                | EventType::CloseActiveTab
                 | EventType::TabTerminal(..) => (),
                 EventType::BlinkCursor => {
                     // Only change state when timeout isn't reached, since we could get

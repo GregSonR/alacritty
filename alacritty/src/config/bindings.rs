@@ -223,6 +223,9 @@ pub enum Action {
     /// Create new window in a tab.
     CreateNewTab,
 
+    /// Close the currently active tab.
+    CloseTab,
+
     /// Toggle fullscreen.
     ToggleFullscreen,
 
@@ -550,6 +553,7 @@ fn common_keybindings() -> Vec<KeyBinding> {
         "f",    ModifiersState::CONTROL | ModifiersState::SHIFT, ~BindingMode::SEARCH;                   Action::SearchForward;
         "b",    ModifiersState::CONTROL | ModifiersState::SHIFT, ~BindingMode::SEARCH;                   Action::SearchBackward;
         "t",    ModifiersState::CONTROL | ModifiersState::SHIFT;                                         Action::CreateNewTab;
+        F4,     ModifiersState::CONTROL | ModifiersState::SHIFT;                                         Action::CloseTab;
         "1",    ModifiersState::ALT;                                                                     Action::SelectTab1;
         "2",    ModifiersState::ALT;                                                                     Action::SelectTab2;
         "3",    ModifiersState::ALT;                                                                     Action::SelectTab3;

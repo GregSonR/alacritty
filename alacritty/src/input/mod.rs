@@ -102,6 +102,7 @@ pub trait ActionContext<T: EventListener> {
     #[cfg(not(target_os = "macos"))]
     fn create_new_window(&mut self) {}
     fn create_new_tab(&mut self) {}
+    fn close_current_tab(&mut self) {}
     fn select_tab(&mut self, _index: usize) {}
     fn change_font_size(&mut self, _delta: f32) {}
     fn reset_font_size(&mut self) {}
@@ -411,6 +412,7 @@ impl<T: EventListener> Execute<T> for Action {
             Action::CreateNewTab => {
                 ctx.create_new_tab();
             },
+            Action::CloseTab => ctx.close_current_tab(),
             Action::SelectTab1 => ctx.select_tab(0),
             Action::SelectTab2 => ctx.select_tab(1),
             Action::SelectTab3 => ctx.select_tab(2),

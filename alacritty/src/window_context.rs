@@ -65,6 +65,8 @@ pub struct WindowContext {
     occluded: bool,
     window_config: ParsedOptions,
     config: Rc<UiConfig>,
+    /// Proxy used to emit window-level events (e.g. closing the window when the last tab exits).
+    proxy: EventLoopProxy<Event>,
 }
 
 struct TerminalTab {
@@ -182,13 +184,14 @@ impl WindowContext {
         options: WindowOptions,
         proxy: EventLoopProxy<Event>,
     ) -> Result<Self, Box<dyn Error>> {
-        let tab = Self::create_terminal_tab(&display, &config, options, proxy, 0)?;
+        let tab = Self::create_terminal_tab(&display, &config, options, proxy.clone(), 0)?;
 
         // Create context for the Alacritty window.
         Ok(WindowContext {
             tabs: vec![tab],
             active_tab: 0,
             next_tab_id: 1,
+            proxy,
             display,
             config,
             cursor_blink_timed_out: Default::default(),
@@ -426,18 +429,32 @@ impl WindowContext {
         self.sync_active_tab();
     }
 
+    pub fn close_active_tab(&mut self) {
+        self.close_tab(self.active_tab);
+    }
+
     pub fn close_tab(&mut self, index: usize) {
         if index >= self.tabs.len() {
             return;
         }
 
-        if self.tabs.len() == 1 {
-            self.tabs[index].terminal.lock().exit();
+        // Keep the window open with the exited terminal when `hold` is set.
+        if self.tabs.len() == 1 && self.display.window.hold {
             return;
         }
 
         let tab = self.tabs.remove(index);
         let _ = tab.notifier.0.send(Msg::Shutdown);
+
+        // Closing the final tab closes the window. Emit a window-level `Exit` so the event
+        // loop removes this window (and exits the app if it was the last one). All terminal
+        // events from a tab are wrapped as `TabTerminal`, so this is the only path that
+        // reaches the window-removal handler.
+        if self.tabs.is_empty() {
+            let _ = self.proxy.send_event(Event::new(TerminalEvent::Exit.into(), self.id()));
+            return;
+        }
+
         if self.active_tab >= self.tabs.len() {
             self.active_tab = self.tabs.len() - 1;
         } else if index < self.active_tab {
@@ -551,7 +568,8 @@ impl WindowContext {
     pub fn draw(&mut self, scheduler: &mut Scheduler) {
         self.display.window.requested_redraw = false;
 
-        if self.occluded {
+        // Nothing to draw once the last tab has closed and the window is pending removal.
+        if self.occluded || self.tabs.is_empty() {
             return;
         }
 
@@ -592,6 +610,48 @@ impl WindowContext {
         scheduler: &mut Scheduler,
         event: WinitEvent<Event>,
     ) {
+        // Closing the window (title bar X) closes the whole window regardless of how many tabs
+        // are open. Clear `hold` so it closes even in hold mode, and emit a window-level `Exit`
+        // so the event loop removes this window; per-tab `Exit` events never reach that handler.
+        if let WinitEvent::WindowEvent { event: WindowEvent::CloseRequested, .. } = &event {
+            self.display.window.hold = false;
+            let _ = self.proxy.send_event(Event::new(TerminalEvent::Exit.into(), self.id()));
+            return;
+        }
+
+        // Keep the pointer position current for tab bar hit-testing. Pointer motion is
+        // otherwise only applied while draining the (batched) event queue, which happens
+        // after a click has already been routed, so a press could be tested against a
+        // stale position.
+        if let WinitEvent::WindowEvent { event: WindowEvent::CursorMoved { position, .. }, .. } =
+            &event
+        {
+            let size = &self.display.size_info;
+            self.mouse.x = (position.x as i32).clamp(0, size.width() as i32 - 1) as usize;
+            self.mouse.y = (position.y as i32).clamp(0, size.height() as i32 - 1) as usize;
+        }
+
+        // Route clicks on the internal tab bar before they are batched and delivered to the
+        // terminal, so selecting/closing tabs works regardless of the event batching below.
+        if let WinitEvent::WindowEvent {
+            event:
+                WindowEvent::MouseInput {
+                    state: winit::event::ElementState::Pressed,
+                    button: winit::event::MouseButton::Left,
+                    ..
+                },
+            ..
+        } = &event
+        {
+            if let Some(hit) = self.display.tab_bar_hit(self.mouse.x as f64, self.mouse.y as f64) {
+                match hit {
+                    TabBarHit::Select(index) => self.select_tab(index),
+                    TabBarHit::Close(index) => self.close_tab(index),
+                }
+                return;
+            }
+        }
+
         match event {
             WinitEvent::AboutToWait
             | WinitEvent::WindowEvent { event: WindowEvent::RedrawRequested, .. } => {
@@ -608,22 +668,10 @@ impl WindowContext {
             },
         }
 
-        if let WinitEvent::WindowEvent {
-            event: WindowEvent::MouseInput { state, button: winit::event::MouseButton::Left, .. },
-            ..
-        } = &event
-        {
-            if *state == winit::event::ElementState::Pressed {
-                if let Some(hit) =
-                    self.display.tab_bar_hit(self.mouse.x as f64, self.mouse.y as f64)
-                {
-                    match hit {
-                        TabBarHit::Select(index) => self.select_tab(index),
-                        TabBarHit::Close(index) => self.close_tab(index),
-                    }
-                    return;
-                }
-            }
+        // The final tab may have just closed, leaving the window pending removal by the event
+        // loop. Don't touch `tabs` in that window, since it's now empty.
+        if self.tabs.is_empty() {
+            return;
         }
 
         let tab_bar_visible = self.tabs.len() > 1;
